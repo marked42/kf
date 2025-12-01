@@ -1,3 +1,9 @@
+use kf::{Parser, cli, grep};
+
 fn main() {
-    println!("Hello, world!");
+    let cli = cli::Cli::parse();
+
+    match cli.command {
+        cli::Command::Grep(args) => grep::grep(args),
+    }
 }
