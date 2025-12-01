@@ -1,0 +1,28 @@
+# 导入排序
+reorder_imports = true
+# unstable feature off
+# group_imports = "StdExternalCrate"
+
+# 导入分组顺序
+reorder_modules = true
+# 导入分组顺序（标准库 -> 外部库 -> 当前crate）
+imports_granularity = "Module"
+
+# 代码格式
+max_width = 100
+tab_spaces = 4
+newline_style = "Unix"
+
+# 其他常用配置
+chain_width = 80
+# wrap_comments = true
+# format_code_in_doc_comments = true
+
+# 函数参数格式
+# fn_args_layout = "Vertical"
+
+# 控制流格式
+# control_brace_style = "AlwaysSameLine"
+
+# 匹配表达式格式
+# match_arm_blocks = true
