@@ -22,18 +22,18 @@ pub fn grep(args: GrepArgs) {
     if args.files.is_empty() {
         let reader = std::io::stdin().lock();
         if reader.is_terminal() {
-            find_match_from_terminal(Box::new(reader), &pattern, args.color);
+            output_matches_from_terminal(Box::new(reader), &pattern, args.color);
         } else {
-            process_reader(Box::new(reader), "stdin", &pattern, &args).unwrap_or_else(|e| {
-                eprintln!("Error processing stdin: {}", e);
-            });
+            output_matches_from_stdin(Box::new(reader), "stdin", &pattern, &args);
         }
     } else {
-        find_match_from_files(&args, &pattern);
+        output_matches_from_files(&args, &pattern);
     }
+    // avoid shell output '%' before next command
+    println!("")
 }
 
-fn find_match_from_terminal(reader: Box<dyn BufRead>, pattern: &Regex, color: bool) {
+fn output_matches_from_terminal(reader: Box<dyn BufRead>, pattern: &Regex, color: bool) {
     for line in reader.lines() {
         match line {
             Ok(line) => {
@@ -55,70 +55,87 @@ fn find_match_from_terminal(reader: Box<dyn BufRead>, pattern: &Regex, color: bo
     }
 }
 
-fn find_match_from_files(args: &GrepArgs, pattern: &Regex) {
+fn output_matches_from_stdin(
+    reader: Box<dyn BufRead>,
+    file: &str,
+    pattern: &Regex,
+    args: &GrepArgs,
+) {
+    match find_matched_lines_from_reader(reader, pattern, args.invert_match) {
+        Ok(lines) => {
+            if lines.is_empty() {
+                return;
+            }
+
+            output_file_match(file, &lines, pattern, args);
+        }
+        Err(e) => {
+            eprintln!("Error processing stdin: {}", e);
+        }
+    }
+}
+
+fn output_matches_from_files(args: &GrepArgs, pattern: &Regex) {
     let files = &find_files(args.files.as_slice(), args.recursive);
 
-    for file in files {
+    for (i, file) in files.iter().enumerate() {
         match file {
-            Ok(file) => {
-                if let Err(e) = process_file(file, &pattern, &args) {
-                    eprintln!("Error processing file: {}", e);
-                    eprintln!("");
+            Ok(file) => match find_matched_lines_from_file(file, &pattern, args.invert_match) {
+                Ok(lines) => {
+                    if lines.is_empty() {
+                        continue;
+                    }
+
+                    output_file_match_separator(i, args.count);
+                    output_file_match(file, &lines, pattern, args);
                 }
-            }
+                Err(e) => {
+                    eprintln!("Error reading file {}: {}", file, e);
+                }
+            },
             Err(e) => {
                 eprintln!("Error accessing file: {}", e);
-                eprintln!("");
             }
         }
     }
 }
 
-fn process_file(file: &str, pattern: &Regex, args: &GrepArgs) -> io::Result<()> {
-    let reader: Box<dyn BufRead> = Box::new(BufReader::new(File::open(file)?));
-    return process_reader(reader, file, pattern, args);
+fn output_file_match_separator(i: usize, count: bool) {
+    if i > 0 {
+        print!("{}", if count { "\n" } else { "\n\n" });
+    }
 }
 
-fn process_reader(
-    reader: Box<dyn BufRead>,
-    file: &str,
-    pattern: &Regex,
-    args: &GrepArgs,
-) -> io::Result<()> {
-    let lines = find_matched_lines_from_reader(reader, pattern, args.invert_match)?;
-
-    if lines.is_empty() {
-        return Ok(());
-    }
-
+fn output_file_match(file: &str, lines: &Vec<LineMatch>, pattern: &Regex, args: &GrepArgs) {
     if args.count {
         output_file_match_count(file, lines.len(), args.color);
     } else {
         output_file_matched_lines(file, lines, &pattern, args.color);
     }
-
-    Ok(())
 }
 
-fn output_file_matched_lines(path: &str, lines: Vec<LineMatch>, pattern: &Regex, color: bool) {
+fn output_file_matched_lines(path: &str, lines: &Vec<LineMatch>, pattern: &Regex, color: bool) {
     if color {
         println!("{}", path.magenta().bold());
     } else {
         println!("{}", path);
     }
 
-    for (line, num) in lines {
+    for (index, (line, num)) in lines.iter().enumerate() {
+        if index > 0 {
+            println!("");
+        }
+
         if color {
-            println!(
+            print!(
                 "{}:{}",
                 num.to_string().green(),
                 pattern.replace_all(line.trim(), "$0".red().to_string())
             );
         } else {
-            println!("{}:{}", num, line.trim(),);
+            print!("{}:{}", num, line.trim(),);
         }
     }
-    println!("");
 }
 
 fn output_file_match_count(path: &str, count: usize, color: bool) {
@@ -127,7 +144,7 @@ fn output_file_match_count(path: &str, count: usize, color: bool) {
     } else {
         print!("{}", path);
     }
-    println!(":{}", count);
+    print!(":{}", count);
 }
 
 fn find_files(paths: &[String], recursive: bool) -> Vec<Result<String, io::Error>> {
@@ -187,11 +204,21 @@ fn find_directory_files<P: AsRef<Path>>(
     Ok(files)
 }
 
+fn find_matched_lines_from_file(
+    file: &str,
+    pattern: &Regex,
+    invert_match: bool,
+) -> io::Result<Vec<LineMatch>> {
+    let reader: Box<dyn BufRead> = Box::new(BufReader::new(File::open(file)?));
+    let lines = find_matched_lines_from_reader(reader, pattern, invert_match)?;
+    Ok(lines)
+}
+
 fn find_matched_lines_from_reader(
     reader: Box<dyn BufRead>,
     pattern: &Regex,
     invert_match: bool,
-) -> Result<Vec<LineMatch>, io::Error> {
+) -> io::Result<Vec<LineMatch>> {
     let mut matches = vec![];
 
     for (index, line) in reader.lines().enumerate() {
