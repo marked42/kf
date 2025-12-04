@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, IsTerminal};
 use std::path::Path;
 use std::{fs, io};
 
@@ -20,15 +20,20 @@ pub fn grep(args: GrepArgs) {
     };
 
     if args.files.is_empty() {
-        find_match_from_terminal(&pattern, args.color);
+        let reader = std::io::stdin().lock();
+        if reader.is_terminal() {
+            find_match_from_terminal(Box::new(reader), &pattern, args.color);
+        } else {
+            process_reader(Box::new(reader), "stdin", &pattern, &args).unwrap_or_else(|e| {
+                eprintln!("Error processing stdin: {}", e);
+            });
+        }
     } else {
         find_match_from_files(&args, &pattern);
     }
 }
 
-fn find_match_from_terminal(pattern: &Regex, color: bool) {
-    let reader = std::io::stdin().lock();
-
+fn find_match_from_terminal(reader: Box<dyn BufRead>, pattern: &Regex, color: bool) {
     for line in reader.lines() {
         match line {
             Ok(line) => {
@@ -70,7 +75,17 @@ fn find_match_from_files(args: &GrepArgs, pattern: &Regex) {
 }
 
 fn process_file(file: &str, pattern: &Regex, args: &GrepArgs) -> io::Result<()> {
-    let lines = find_matched_lines_in_file(file, &pattern, args.invert_match)?;
+    let reader: Box<dyn BufRead> = Box::new(BufReader::new(File::open(file)?));
+    return process_reader(reader, file, pattern, args);
+}
+
+fn process_reader(
+    reader: Box<dyn BufRead>,
+    file: &str,
+    pattern: &Regex,
+    args: &GrepArgs,
+) -> io::Result<()> {
+    let lines = find_matched_lines_from_reader(reader, pattern, args.invert_match)?;
 
     if lines.is_empty() {
         return Ok(());
@@ -172,14 +187,11 @@ fn find_directory_files<P: AsRef<Path>>(
     Ok(files)
 }
 
-fn find_matched_lines_in_file(
-    file_path: impl AsRef<Path>,
+fn find_matched_lines_from_reader(
+    reader: Box<dyn BufRead>,
     pattern: &Regex,
     invert_match: bool,
 ) -> Result<Vec<LineMatch>, io::Error> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-
     let mut matches = vec![];
 
     for (index, line) in reader.lines().enumerate() {
