@@ -11,6 +11,8 @@ use crate::cli::GrepArgs;
 type LineMatch = (String, usize);
 
 pub fn grep(args: GrepArgs) {
+    println!("args: {:?}", args);
+
     let pattern = match args.compiled_pattern() {
         Ok(pattern) => pattern,
         Err(e) => {

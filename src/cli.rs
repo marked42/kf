@@ -2,7 +2,7 @@ pub use clap::{Parser, Subcommand};
 use regex::{Regex, RegexBuilder};
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, GrepError>;
+pub type Result<T> = std::result::Result<T, CliError>;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -54,7 +54,7 @@ pub struct GrepArgs {
 }
 
 fn validate_regex_value(s: &str) -> Result<String> {
-    Regex::new(s).map_err(GrepError::InvalidRegex)?;
+    Regex::new(s).map_err(CliError::Usage)?;
     Ok(s.to_string())
 }
 
@@ -68,6 +68,15 @@ impl GrepArgs {
 
 #[derive(Error, Debug)]
 pub enum GrepError {
-    #[error("Invalid regex pattern: {0}")]
+    #[error("{0}")]
     InvalidRegex(#[from] regex::Error),
+}
+
+#[derive(Error, Debug)]
+pub enum CliError {
+    #[error("{0}")]
+    Usage(#[from] String),
+
+    #[error(transparent)]
+    Grep(#[from] GrepError),
 }
