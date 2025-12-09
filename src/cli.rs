@@ -2,7 +2,7 @@ pub use clap::{Parser, Subcommand};
 use regex::{Regex, RegexBuilder};
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, GrepError>;
+pub type Result<T> = std::result::Result<T, CliError>;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -54,20 +54,31 @@ pub struct GrepArgs {
 }
 
 fn validate_regex_value(s: &str) -> Result<String> {
-    Regex::new(s).map_err(GrepError::InvalidRegex)?;
+    Regex::new(s).map_err(|e| CliError::Usage(e.to_string()))?;
     Ok(s.to_string())
 }
 
 impl GrepArgs {
-    pub fn compiled_pattern(&self) -> Result<Regex> {
+    // TODO: pattern should be resolved once in entrance
+    pub fn compiled_pattern(&self) -> std::result::Result<Regex, regex::Error> {
         let mut builder = RegexBuilder::new(&self.pattern);
         builder.case_insensitive(self.ignore_case);
-        builder.build().map_err(GrepError::InvalidRegex)
+        builder.build()
     }
 }
 
 #[derive(Error, Debug)]
 pub enum GrepError {
-    #[error("Invalid regex pattern: {0}")]
+    #[error("{0}")]
     InvalidRegex(#[from] regex::Error),
+}
+
+#[derive(Error, Debug)]
+pub enum CliError {
+    // TODO: need dynamic error type
+    #[error("{0}")]
+    Usage(String),
+
+    #[error(transparent)]
+    Grep(#[from] GrepError),
 }
