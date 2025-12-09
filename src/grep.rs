@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, IsTerminal};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::path::Path;
 use std::{fs, io};
 
@@ -57,6 +57,9 @@ impl GrepArgs {
 pub enum GrepError {
     #[error("{0}")]
     InvalidRegex(#[from] regex::Error),
+
+    #[error("{0}")]
+    IoError(#[from] io::Error),
 }
 
 type Result<T> = std::result::Result<T, GrepError>;
@@ -65,80 +68,76 @@ type LineMatch = (String, usize);
 pub fn grep(args: GrepArgs) -> Result<()> {
     let pattern = args.compiled_pattern().map_err(GrepError::InvalidRegex)?;
 
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+
     if args.files.is_empty() {
-        let reader = std::io::stdin().lock();
-        if reader.is_terminal() {
-            output_matches_from_terminal(Box::new(reader), &pattern, args.color);
-        } else {
-            output_matches_from_stdin(Box::new(reader), "stdin", &pattern, &args);
-        }
+        grep_stdin(&pattern, &args, &mut handle)?;
     } else {
-        output_matches_from_files(&args, &pattern);
+        grep_files(&pattern, &args, &mut handle)?;
     }
     // avoid shell output '%' before next command
-    println!("");
+    writeln!(handle, "")?;
 
     Ok(())
 }
 
-fn output_matches_from_terminal(reader: Box<dyn BufRead>, pattern: &Regex, color: bool) {
-    for line in reader.lines() {
-        match line {
-            Ok(line) => {
-                let m = pattern.find(&line);
-                if m.is_some() {
-                    if color {
-                        println!("{}", pattern.replace_all(&line, "$0".red().to_string()));
-                    } else {
-                        println!("{}", line);
-                    }
-                } else {
-                    println!("{}", line);
-                }
-            }
-            Err(e) => {
-                eprintln!("Error reading line: {}", e);
-            }
-        }
-    }
-}
-
-fn output_matches_from_stdin(
-    reader: Box<dyn BufRead>,
-    file: &str,
+fn grep_interactive<R: BufRead, W: Write>(
+    reader: R,
     pattern: &Regex,
-    args: &GrepArgs,
-) {
-    match find_matched_lines_from_reader(reader, pattern, args.invert_match) {
-        Ok(lines) => {
-            if lines.is_empty() {
-                return;
+    color: bool,
+    writer: &mut W,
+) -> io::Result<()> {
+    for line in reader.lines() {
+        let line = line?;
+        let m = pattern.find(&line);
+        if m.is_some() {
+            if color {
+                writeln!(
+                    writer,
+                    "{}",
+                    pattern.replace_all(&line, "$0".red().to_string())
+                )?;
+            } else {
+                writeln!(writer, "{}", line)?;
             }
+        } else {
+            writeln!(writer, "{}", line)?;
+        }
+    }
 
-            output_file_match(file, &lines, pattern, args);
+    Ok(())
+}
+
+fn grep_stdin<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<()> {
+    let reader = std::io::stdin().lock();
+    if reader.is_terminal() {
+        grep_interactive(reader, &pattern, args.color, writer)
+    } else {
+        let matches = find_matches_in_reader(reader, pattern, args.invert_match)?;
+        if !matches.is_empty() {
+            output_file_matches("stdin", &matches, pattern, args, writer)?;
         }
-        Err(e) => {
-            eprintln!("Error processing stdin: {}", e);
-        }
+        Ok(())
     }
 }
 
-fn output_matches_from_files(args: &GrepArgs, pattern: &Regex) {
+fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<()> {
     let files = &find_files(args.files.as_slice(), args.recursive);
 
     for (i, file) in files.iter().enumerate() {
         match file {
-            Ok(file) => match find_matched_lines_from_file(file, &pattern, args.invert_match) {
+            Ok(file) => match find_matches_in_file(file, &pattern, args.invert_match) {
                 Ok(lines) => {
                     if lines.is_empty() {
                         continue;
                     }
 
-                    output_file_match_separator(i, args.count);
-                    output_file_match(file, &lines, pattern, args);
+                    output_file_match_separator(i, args.count, writer)?;
+                    output_file_matches(file, &lines, pattern, args, writer)?;
                 }
                 Err(e) => {
-                    eprintln!("Error reading file {}: {}", file, e);
+                    writeln!(io::stderr(), "Error reading file {}: {}", file, e)?;
                 }
             },
             Err(e) => {
@@ -146,53 +145,77 @@ fn output_matches_from_files(args: &GrepArgs, pattern: &Regex) {
             }
         }
     }
+
+    Ok(())
 }
 
-fn output_file_match_separator(i: usize, count: bool) {
+fn output_file_match_separator<W: Write>(i: usize, count: bool, writer: &mut W) -> io::Result<()> {
     if i > 0 {
-        print!("{}", if count { "\n" } else { "\n\n" });
+        write!(writer, "{}", if count { "\n" } else { "\n\n" })?;
     }
+    Ok(())
 }
 
-fn output_file_match(file: &str, lines: &Vec<LineMatch>, pattern: &Regex, args: &GrepArgs) {
+// TODO: file path use AsRef<Path>
+fn output_file_matches<W: Write>(
+    file: &str,
+    lines: &Vec<LineMatch>,
+    pattern: &Regex,
+    args: &GrepArgs,
+    writer: &mut W,
+) -> io::Result<()> {
     if args.count {
-        output_file_match_count(file, lines.len(), args.color);
+        output_file_match_count(file, lines.len(), args.color, writer)
     } else {
-        output_file_matched_lines(file, lines, &pattern, args.color);
+        output_file_matched_lines(file, lines, &pattern, args.color, writer)
     }
 }
 
-fn output_file_matched_lines(path: &str, lines: &Vec<LineMatch>, pattern: &Regex, color: bool) {
+fn output_file_matched_lines<W: Write>(
+    path: &str,
+    lines: &Vec<LineMatch>,
+    pattern: &Regex,
+    color: bool,
+    writer: &mut W,
+) -> io::Result<()> {
     if color {
-        println!("{}", path.magenta().bold());
+        writeln!(writer, "{}", path.magenta().bold())?;
     } else {
-        println!("{}", path);
+        writeln!(writer, "{}", path)?;
     }
 
     for (index, (line, num)) in lines.iter().enumerate() {
         if index > 0 {
-            println!("");
+            writeln!(writer, "")?;
         }
 
         if color {
-            print!(
+            write!(
+                writer,
                 "{}:{}",
                 num.to_string().green(),
                 pattern.replace_all(line.trim(), "$0".red().to_string())
-            );
+            )?;
         } else {
-            print!("{}:{}", num, line.trim(),);
+            write!(writer, "{}:{}", num, line.trim())?;
         }
     }
+
+    Ok(())
 }
 
-fn output_file_match_count(path: &str, count: usize, color: bool) {
+fn output_file_match_count<W: Write>(
+    path: &str,
+    count: usize,
+    color: bool,
+    writer: &mut W,
+) -> io::Result<()> {
     if color {
-        print!("{}", path.magenta().bold());
+        write!(writer, "{}", path.magenta().bold())?;
     } else {
-        print!("{}", path);
+        write!(writer, "{}", path)?;
     }
-    print!(":{}", count);
+    write!(writer, ":{}", count)
 }
 
 fn find_files(paths: &[String], recursive: bool) -> Vec<std::io::Result<String>> {
@@ -249,18 +272,17 @@ fn find_directory_files<P: AsRef<Path>>(path: P, recursive: bool) -> std::io::Re
     Ok(files)
 }
 
-fn find_matched_lines_from_file(
-    file: &str,
+fn find_matches_in_file<P: AsRef<Path>>(
+    file: P,
     pattern: &Regex,
     invert_match: bool,
 ) -> io::Result<Vec<LineMatch>> {
-    let reader: Box<dyn BufRead> = Box::new(BufReader::new(File::open(file)?));
-    let lines = find_matched_lines_from_reader(reader, pattern, invert_match)?;
-    Ok(lines)
+    let reader = BufReader::new(File::open(file)?);
+    find_matches_in_reader(reader, pattern, invert_match)
 }
 
-fn find_matched_lines_from_reader(
-    reader: Box<dyn BufRead>,
+fn find_matches_in_reader<R: BufRead>(
+    reader: R,
     pattern: &Regex,
     invert_match: bool,
 ) -> io::Result<Vec<LineMatch>> {
