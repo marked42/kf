@@ -6,18 +6,13 @@ use std::{fs, io};
 use colored::Colorize;
 use regex::Regex;
 
-use crate::cli::GrepArgs;
+use crate::cli::{GrepArgs, GrepError};
 
+type Result<T> = std::result::Result<T, GrepError>;
 type LineMatch = (String, usize);
 
-pub fn grep(args: GrepArgs) {
-    let pattern = match args.compiled_pattern() {
-        Ok(pattern) => pattern,
-        Err(e) => {
-            eprintln!("Error compiling pattern: {}", e);
-            return;
-        }
-    };
+pub fn grep(args: GrepArgs) -> Result<()> {
+    let pattern = args.compiled_pattern().map_err(GrepError::InvalidRegex)?;
 
     if args.files.is_empty() {
         let reader = std::io::stdin().lock();
@@ -30,7 +25,9 @@ pub fn grep(args: GrepArgs) {
         output_matches_from_files(&args, &pattern);
     }
     // avoid shell output '%' before next command
-    println!("")
+    println!("");
+
+    Ok(())
 }
 
 fn output_matches_from_terminal(reader: Box<dyn BufRead>, pattern: &Regex, color: bool) {
@@ -147,7 +144,7 @@ fn output_file_match_count(path: &str, count: usize, color: bool) {
     print!(":{}", count);
 }
 
-fn find_files(paths: &[String], recursive: bool) -> Vec<Result<String, io::Error>> {
+fn find_files(paths: &[String], recursive: bool) -> Vec<std::io::Result<String>> {
     let mut files = vec![];
 
     for path in paths {
@@ -182,10 +179,7 @@ fn find_files(paths: &[String], recursive: bool) -> Vec<Result<String, io::Error
     files
 }
 
-fn find_directory_files<P: AsRef<Path>>(
-    path: P,
-    recursive: bool,
-) -> Result<Vec<String>, io::Error> {
+fn find_directory_files<P: AsRef<Path>>(path: P, recursive: bool) -> std::io::Result<Vec<String>> {
     let mut files: Vec<String> = vec![];
 
     for entry in fs::read_dir(path)? {
