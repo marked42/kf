@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use clap::Parser;
@@ -125,19 +125,21 @@ fn grep_stdin<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io:
     } else {
         let matches = find_matches_in_reader(reader, pattern, args.invert_match)?;
         if !matches.is_empty() {
-            output_file_matches("stdin", &matches, pattern, args, writer)?;
+            output_file_matches(&"stdin", &matches, pattern, args, writer)?;
         }
         Ok(())
     }
 }
 
 fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<()> {
-    let files = &find_files(args.files.as_slice(), args.recursive);
+    let files = find_files(args.files.as_slice(), args.recursive);
     let mut has_output = false;
 
-    for (i, file) in files.iter().enumerate() {
-        match file {
-            Ok(file) => match find_matches_in_file(file, &pattern, args.invert_match) {
+    for (i, file_result) in files.into_iter().enumerate() {
+        // let file_path = file_result?;
+
+        match file_result {
+            Ok(file_path) => match find_matches_in_file(&file_path, &pattern, args.invert_match) {
                 Ok(lines) => {
                     if lines.is_empty() {
                         continue;
@@ -146,11 +148,16 @@ fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io:
                     if has_output {
                         output_file_match_separator(i, args.count, writer)?;
                     }
-                    output_file_matches(file, &lines, pattern, args, writer)?;
+                    output_file_matches(&file_path, &lines, pattern, args, writer)?;
                     has_output = true;
                 }
                 Err(e) => {
-                    writeln!(io::stderr(), "Error reading file {}: {}", file, e)?;
+                    writeln!(
+                        io::stderr(),
+                        "Error reading file {}: {}",
+                        file_path.display(),
+                        e
+                    )?;
                 }
             },
             Err(e) => {
@@ -169,28 +176,28 @@ fn output_file_match_separator<W: Write>(i: usize, count: bool, writer: &mut W) 
     Ok(())
 }
 
-// TODO: file path use AsRef<Path>
-fn output_file_matches<W: Write>(
-    file: &str,
+fn output_file_matches<W: Write, P: AsRef<Path>>(
+    file_path: &P,
     lines: &Vec<LineMatch>,
     pattern: &Regex,
     args: &GrepArgs,
     writer: &mut W,
 ) -> io::Result<()> {
     if args.count {
-        output_file_match_count(file, lines.len(), args.color, writer)
+        output_file_match_count(file_path, lines.len(), args.color, writer)
     } else {
-        output_file_matched_lines(file, lines, &pattern, args.color, writer)
+        output_file_matched_lines(file_path, lines, &pattern, args.color, writer)
     }
 }
 
-fn output_file_matched_lines<W: Write>(
-    path: &str,
+fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
+    path: &P,
     lines: &Vec<LineMatch>,
     pattern: &Regex,
     color: bool,
     writer: &mut W,
 ) -> io::Result<()> {
+    let path = path.as_ref().to_string_lossy();
     if color {
         writeln!(writer, "{}", path.magenta().bold())?;
     } else {
@@ -217,33 +224,34 @@ fn output_file_matched_lines<W: Write>(
     Ok(())
 }
 
-fn output_file_match_count<W: Write>(
-    path: &str,
+fn output_file_match_count<W: Write, P: AsRef<Path>>(
+    file_path: &P,
     count: usize,
     color: bool,
     writer: &mut W,
 ) -> io::Result<()> {
+    let file_path = file_path.as_ref().to_string_lossy();
     if color {
-        write!(writer, "{}", path.magenta().bold())?;
+        write!(writer, "{}:{}", file_path.magenta().bold(), count)
     } else {
-        write!(writer, "{}", path)?;
+        write!(writer, "{}:{}", file_path, count)
     }
-    write!(writer, ":{}", count)
 }
 
-fn find_files(paths: &[String], recursive: bool) -> Vec<std::io::Result<String>> {
+fn find_files<P: AsRef<Path>>(paths: &[P], recursive: bool) -> Vec<std::io::Result<PathBuf>> {
     let mut files = vec![];
 
     for path in paths {
+        let path = path.as_ref();
         let metadata = fs::metadata(path);
 
         match metadata {
             Ok(f) => {
                 if f.is_file() {
-                    files.push(Ok(path.to_string()));
+                    files.push(Ok(path.to_path_buf()));
                 } else if f.is_dir() {
                     if recursive {
-                        match find_directory_files(path, recursive) {
+                        match find_files_in_dir(&path, recursive) {
                             Err(e) => files.push(Err(e)),
                             Ok(sub_files) => {
                                 files.extend(sub_files.into_iter().map(Ok));
@@ -252,7 +260,7 @@ fn find_files(paths: &[String], recursive: bool) -> Vec<std::io::Result<String>>
                     } else {
                         files.push(Err(io::Error::new(
                             io::ErrorKind::Other,
-                            format!("{} is a directory", path),
+                            format!("{} is a directory", path.display()),
                         )));
                     }
                 }
@@ -266,18 +274,16 @@ fn find_files(paths: &[String], recursive: bool) -> Vec<std::io::Result<String>>
     files
 }
 
-fn find_directory_files<P: AsRef<Path>>(path: P, recursive: bool) -> std::io::Result<Vec<String>> {
-    let mut files: Vec<String> = vec![];
+fn find_files_in_dir<P: AsRef<Path>>(dir_path: &P, recursive: bool) -> io::Result<Vec<PathBuf>> {
+    let mut files = vec![];
 
-    for entry in fs::read_dir(path)? {
+    for entry in fs::read_dir(dir_path)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() {
-            if let Some(p) = path.to_str() {
-                files.push(p.to_string());
-            }
+            files.push(path);
         } else if path.is_dir() && recursive {
-            let mut nested_files = find_directory_files(path, recursive)?;
+            let mut nested_files = find_files_in_dir(&path, recursive)?;
             files.append(&mut nested_files);
         }
     }
@@ -286,7 +292,7 @@ fn find_directory_files<P: AsRef<Path>>(path: P, recursive: bool) -> std::io::Re
 }
 
 fn find_matches_in_file<P: AsRef<Path>>(
-    file: P,
+    file: &P,
     pattern: &Regex,
     invert_match: bool,
 ) -> io::Result<Vec<LineMatch>> {
