@@ -78,6 +78,7 @@ pub fn grep(args: GrepArgs) -> Result<()> {
     }
     // avoid shell output '%' before next command
     writeln!(handle, "")?;
+    handle.flush()?;
 
     Ok(())
 }
@@ -124,6 +125,7 @@ fn grep_stdin<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io:
 
 fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<()> {
     let files = &find_files(args.files.as_slice(), args.recursive);
+    let mut has_output = false;
 
     for (i, file) in files.iter().enumerate() {
         match file {
@@ -133,8 +135,11 @@ fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io:
                         continue;
                     }
 
-                    output_file_match_separator(i, args.count, writer)?;
+                    if has_output {
+                        output_file_match_separator(i, args.count, writer)?;
+                    }
                     output_file_matches(file, &lines, pattern, args, writer)?;
+                    has_output = true;
                 }
                 Err(e) => {
                     writeln!(io::stderr(), "Error reading file {}: {}", file, e)?;
