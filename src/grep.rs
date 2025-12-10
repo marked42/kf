@@ -84,27 +84,35 @@ pub fn grep(args: GrepArgs) -> Result<()> {
 }
 
 fn grep_interactive<R: BufRead, W: Write>(
-    reader: R,
+    mut reader: R,
     pattern: &Regex,
-    color: bool,
+    args: &GrepArgs,
     writer: &mut W,
 ) -> io::Result<()> {
-    for line in reader.lines() {
-        let line = line?;
-        let m = pattern.find(&line);
-        if m.is_some() {
-            if color {
-                writeln!(
-                    writer,
-                    "{}",
-                    pattern.replace_all(&line, "$0".red().to_string())
-                )?;
-            } else {
-                writeln!(writer, "{}", line)?;
-            }
+    // reuse single String buffer in every loop iteration
+    let mut buffer = String::new();
+
+    loop {
+        let bytes_read = reader.read_line(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        let line = buffer.trim_end();
+        let has_match = pattern.is_match(line);
+        let colored_output = has_match && args.color;
+
+        if colored_output {
+            writeln!(
+                writer,
+                "{}",
+                pattern.replace_all(&line, "$0".red().to_string())
+            )?;
         } else {
             writeln!(writer, "{}", line)?;
         }
+
+        // read_line appends to buffer, clear buffer after iteration
+        buffer.clear();
     }
 
     Ok(())
@@ -113,7 +121,7 @@ fn grep_interactive<R: BufRead, W: Write>(
 fn grep_stdin<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<()> {
     let reader = std::io::stdin().lock();
     if reader.is_terminal() {
-        grep_interactive(reader, &pattern, args.color, writer)
+        grep_interactive(reader, &pattern, args, writer)
     } else {
         let matches = find_matches_in_reader(reader, pattern, args.invert_match)?;
         if !matches.is_empty() {
