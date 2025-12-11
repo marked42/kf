@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -51,6 +52,10 @@ impl GrepArgs {
         let mut builder = RegexBuilder::new(&self.pattern);
         builder.case_insensitive(self.ignore_case);
         builder.build()
+    }
+
+    pub fn should_use_color(&self) -> bool {
+        self.color && std::io::stdout().is_terminal()
     }
 }
 
@@ -107,14 +112,10 @@ fn grep_interactive<R: BufRead, W: Write>(
         }
         let line = buffer.trim_end();
         let has_match = pattern.is_match(line);
-        let colored_output = has_match && args.color;
+        let colored_output = has_match && args.should_use_color();
 
         if colored_output {
-            writeln!(
-                writer,
-                "{}",
-                pattern.replace_all(&line, "$0".red().to_string())
-            )?;
+            writeln!(writer, "{}", highlight_pattern(line, pattern))?;
         } else {
             writeln!(writer, "{}", line)?;
         }
@@ -132,6 +133,7 @@ fn grep_stdin<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io:
         grep_interactive(reader, &pattern, args, writer)?;
         Ok(true)
     } else {
+        // redirect stdout to pipe
         let matches = find_matches_in_reader(reader, pattern, args.invert_match)?;
         let has_matches = !matches.is_empty();
         if has_matches {
@@ -189,9 +191,9 @@ fn output_file_matches<W: Write, P: AsRef<Path>>(
     writer: &mut W,
 ) -> io::Result<()> {
     if args.count {
-        output_file_match_count(file_path, lines.len(), args.color, writer)
+        output_file_match_count(file_path, lines.len(), args, writer)
     } else {
-        output_file_matched_lines(file_path, lines, &pattern, args.color, writer)
+        output_file_matched_lines(file_path, lines, &pattern, args, writer)
     }
 }
 
@@ -199,10 +201,11 @@ fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
     path: &P,
     lines: &Vec<LineMatch>,
     pattern: &Regex,
-    color: bool,
+    args: &GrepArgs,
     writer: &mut W,
 ) -> io::Result<()> {
     let path = path.as_ref().to_string_lossy();
+    let color = args.should_use_color();
     if color {
         writeln!(writer, "{}", path.magenta().bold())?;
     } else {
@@ -219,7 +222,7 @@ fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
                 writer,
                 "{}:{}",
                 num.to_string().green(),
-                pattern.replace_all(line.trim(), "$0".red().to_string())
+                highlight_pattern(line.trim(), pattern)
             )?;
         } else {
             write!(writer, "{}:{}", num, line.trim())?;
@@ -232,11 +235,11 @@ fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
 fn output_file_match_count<W: Write, P: AsRef<Path>>(
     file_path: &P,
     count: usize,
-    color: bool,
+    args: &GrepArgs,
     writer: &mut W,
 ) -> io::Result<()> {
     let file_path = file_path.as_ref().to_string_lossy();
-    if color {
+    if args.should_use_color() {
         write!(writer, "{}:{}", file_path.magenta().bold(), count)
     } else {
         write!(writer, "{}:{}", file_path, count)
@@ -324,4 +327,8 @@ fn find_matches_in_reader<R: BufRead>(
     }
 
     Ok(matches)
+}
+
+fn highlight_pattern<'a>(line: &'a str, pattern: &Regex) -> Cow<'a, str> {
+    pattern.replace_all(line, "$0".red().to_string())
 }
