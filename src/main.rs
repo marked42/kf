@@ -9,10 +9,17 @@ fn main() {
             eprintln!("wrong usage: {}", msg);
             process::exit(2);
         }
-        Err(CliError::Grep(e)) => {
-            eprintln!("grep error: {}", e);
-            process::exit(1);
-        }
+        Err(CliError::Grep(e)) => match e {
+            kf::GrepError::NoMatches => {
+                // grep convention exit 1 when no matches
+                eprintln!("grep error: {}", e);
+                process::exit(1);
+            }
+            _ => {
+                eprintln!("grep error: {}", e);
+                process::exit(2);
+            }
+        },
     }
 }
 
