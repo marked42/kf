@@ -39,9 +39,10 @@ pub struct GrepArgs {
     pub color: bool,
 }
 
-fn validate_regex_value(s: &str) -> std::result::Result<String, regex::Error> {
-    let p = Regex::new(s)?;
-    Ok(p.to_string())
+fn validate_regex_value(s: &str) -> std::result::Result<String, String> {
+    Regex::new(s)
+        .map(|re| re.to_string())
+        .map_err(|e| format!("Invalid regex pattern: {}", e))
 }
 
 impl GrepArgs {
@@ -55,32 +56,39 @@ impl GrepArgs {
 
 #[derive(Error, Debug)]
 pub enum GrepError {
-    #[error("{0}")]
-    InvalidRegex(#[from] regex::Error),
+    #[error("Invalid pattern: {0}")]
+    InvalidPattern(#[from] regex::Error),
 
-    #[error("{0}")]
+    #[error("IO error: {0}")]
     IoError(#[from] io::Error),
+
+    #[error("No matches found")]
+    NoMatches,
 }
 
 type Result<T> = std::result::Result<T, GrepError>;
 type LineMatch = (String, usize);
 
 pub fn grep(args: GrepArgs) -> Result<()> {
-    let pattern = args.compiled_pattern().map_err(GrepError::InvalidRegex)?;
+    let pattern = args.compiled_pattern().map_err(GrepError::InvalidPattern)?;
 
     let stdout = io::stdout();
-    let mut handle = stdout.lock();
+    let mut writer = stdout.lock();
 
-    if args.files.is_empty() {
-        grep_stdin(&pattern, &args, &mut handle)?;
+    let has_matches = if args.files.is_empty() {
+        grep_stdin(&pattern, &args, &mut writer)?
     } else {
-        grep_files(&pattern, &args, &mut handle)?;
-    }
+        grep_files(&pattern, &args, &mut writer)?
+    };
     // avoid shell output '%' before next command
-    writeln!(handle, "")?;
-    handle.flush()?;
+    // writeln!(writer, "")?;
+    writer.flush()?;
 
-    Ok(())
+    if has_matches {
+        Ok(())
+    } else {
+        Err(GrepError::NoMatches)
+    }
 }
 
 fn grep_interactive<R: BufRead, W: Write>(
@@ -118,39 +126,36 @@ fn grep_interactive<R: BufRead, W: Write>(
     Ok(())
 }
 
-fn grep_stdin<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<()> {
+fn grep_stdin<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     let reader = std::io::stdin().lock();
     if reader.is_terminal() {
-        grep_interactive(reader, &pattern, args, writer)
+        grep_interactive(reader, &pattern, args, writer)?;
+        Ok(true)
     } else {
         let matches = find_matches_in_reader(reader, pattern, args.invert_match)?;
-        if !matches.is_empty() {
+        let has_matches = !matches.is_empty();
+        if has_matches {
             output_file_matches(&"stdin", &matches, pattern, args, writer)?;
         }
-        Ok(())
+        Ok(has_matches)
     }
 }
 
-fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<()> {
+fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     let files = find_files(args.files.as_slice(), args.recursive);
-    let mut has_output = false;
+    let mut has_matches = false;
 
     for (i, file_result) in files.into_iter().enumerate() {
-        // let file_path = file_result?;
-
         match file_result {
             Ok(file_path) => match find_matches_in_file(&file_path, &pattern, args.invert_match) {
-                Ok(lines) => {
-                    if lines.is_empty() {
-                        continue;
-                    }
-
-                    if has_output {
+                Ok(lines) if !lines.is_empty() => {
+                    if has_matches {
                         output_file_match_separator(i, args.count, writer)?;
                     }
                     output_file_matches(&file_path, &lines, pattern, args, writer)?;
-                    has_output = true;
+                    has_matches = true;
                 }
+                Ok(_) => continue,
                 Err(e) => {
                     writeln!(
                         io::stderr(),
@@ -166,7 +171,7 @@ fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io:
         }
     }
 
-    Ok(())
+    Ok(has_matches)
 }
 
 fn output_file_match_separator<W: Write>(i: usize, count: bool, writer: &mut W) -> io::Result<()> {
@@ -260,7 +265,10 @@ fn find_files<P: AsRef<Path>>(paths: &[P], recursive: bool) -> Vec<std::io::Resu
                     } else {
                         files.push(Err(io::Error::new(
                             io::ErrorKind::Other,
-                            format!("{} is a directory", path.display()),
+                            format!(
+                                "{} is a directory, use -r to search recursively",
+                                path.display()
+                            ),
                         )));
                     }
                 }
