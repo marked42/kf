@@ -72,7 +72,12 @@ pub enum GrepError {
 }
 
 type Result<T> = std::result::Result<T, GrepError>;
-type LineMatch = (String, usize);
+
+#[derive(Debug, Clone)]
+struct LineMatch {
+    line: String,
+    line_number: usize,
+}
 
 pub fn grep(args: GrepArgs) -> Result<()> {
     let pattern = args.compiled_pattern().map_err(GrepError::InvalidPattern)?;
@@ -105,11 +110,7 @@ fn grep_interactive<R: BufRead, W: Write>(
     // reuse single String buffer in every loop iteration
     let mut buffer = String::new();
 
-    loop {
-        let bytes_read = reader.read_line(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
+    while reader.read_line(&mut buffer)? > 0 {
         let line = buffer.trim_end();
         let has_match = pattern.is_match(line);
         let colored_output = has_match && args.should_use_color();
@@ -212,7 +213,7 @@ fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
         writeln!(writer, "{}", path)?;
     }
 
-    for (index, (line, num)) in lines.iter().enumerate() {
+    for (index, LineMatch { line, line_number }) in lines.iter().enumerate() {
         if index > 0 {
             writeln!(writer, "")?;
         }
@@ -221,11 +222,11 @@ fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
             write!(
                 writer,
                 "{}:{}",
-                num.to_string().green(),
+                line_number.to_string().green(),
                 highlight_pattern(line.trim(), pattern)
             )?;
         } else {
-            write!(writer, "{}:{}", num, line.trim())?;
+            write!(writer, "{}:{}", line_number, line.trim())?;
         }
     }
 
@@ -322,7 +323,10 @@ fn find_matches_in_reader<R: BufRead>(
         let line = line?;
         let matched = pattern.is_match(&line);
         if matched ^ invert_match {
-            matches.push((line, index + 1));
+            matches.push(LineMatch {
+                line,
+                line_number: index + 1,
+            });
         }
     }
 
