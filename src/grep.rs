@@ -90,8 +90,6 @@ pub fn grep(args: GrepArgs) -> Result<()> {
     } else {
         grep_files(&pattern, &args, &mut writer)?
     };
-    // avoid shell output '%' before next command
-    // writeln!(writer, "")?;
     writer.flush()?;
 
     if has_matches {
@@ -172,6 +170,11 @@ fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io:
                 eprintln!("Error accessing file: {}", e);
             }
         }
+    }
+
+    // zsh would print '%' when output not ending with newline
+    if has_matches {
+        writeln!(writer, "")?;
     }
 
     Ok(has_matches)
