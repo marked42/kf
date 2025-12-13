@@ -22,6 +22,7 @@ pub enum Command {
     /// Searches pattern in target files or directories
     Grep(GrepArgs),
 }
+
 #[derive(Error, Debug)]
 pub enum CliError {
     // TODO: need dynamic error type
