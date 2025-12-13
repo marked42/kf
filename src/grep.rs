@@ -4,58 +4,135 @@ use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use clap::Parser;
+use clap::builder::PossibleValuesParser;
+use clap::{ArgAction, Args, FromArgMatches};
 use colored::Colorize;
 use regex::{Regex, RegexBuilder};
 use thiserror::Error;
 
-#[derive(Debug, Parser)]
+#[derive(Debug)]
 pub struct GrepArgs {
-    #[arg(index = 1, help = "Pattern to search", value_parser = validate_regex_value)]
-    pattern: String,
-
-    #[arg(
-        index = 2,
-        help = "Target files or directories to search in, search from standard input when not specified"
-    )]
+    pub pattern: Regex,
     pub files: Vec<String>,
-
-    #[arg(short, long, help = "Recursively search files in directory")]
     pub recursive: bool,
-
-    #[arg(short, long, help = "Count occurrences")]
     pub count: bool,
-
-    #[arg(short, long, help = "Invert match")]
     pub invert_match: bool,
-
-    #[arg(long, help = "Case insensitive pattern match")]
     pub ignore_case: bool,
-
-    #[arg(
-        long,
-        help = "Display matched pattern in highlight color",
-        default_value_t = true
-    )]
     pub color: bool,
 }
 
-fn validate_regex_value(s: &str) -> std::result::Result<String, String> {
-    Regex::new(s)
-        .map(|re| re.to_string())
-        .map_err(|e| format!("Invalid regex pattern: {}", e))
-}
-
-impl GrepArgs {
-    // TODO: pattern should be resolved once in entrance
-    pub fn compiled_pattern(&self) -> std::result::Result<Regex, regex::Error> {
-        let mut builder = RegexBuilder::new(&self.pattern);
-        builder.case_insensitive(self.ignore_case);
-        builder.build()
+impl Args for GrepArgs {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        cmd
+            .arg(
+                clap::Arg::new("pattern")
+                    .required(true)
+                    .index(1)
+                    .value_name("PATTERN")
+                    .help("Pattern to search")
+            )
+            .arg(
+                clap::Arg::new("files")
+                    .required(false)
+                    .index(2)
+                    .value_name("FILES")
+                    .num_args(0..)
+                    .help("Target files or directories to search in, search from standard input when not specified")
+            )
+            .arg(
+                clap::Arg::new("recursive")
+                    .short('r')
+                    .long("recursive")
+                    .action(ArgAction::SetTrue)
+                    .help("Recursively search files in directory")
+            )
+            .arg(
+                clap::Arg::new("count")
+                    .short('c')
+                    .long("count")
+                    .action(ArgAction::SetTrue)
+                    .help("Count occurrences")
+            )
+            .arg(
+                clap::Arg::new("invert_match")
+                    .short('v')
+                    .long("invert-match")
+                    .action(ArgAction::SetTrue)
+                    .help("Invert match")
+            )
+            .arg(
+                clap::Arg::new("ignore_case")
+                    .short('i')
+                    .long("ignore-case")
+                    .action(ArgAction::SetTrue)
+                    .help("Case insensitive pattern match")
+            )
+            .arg(
+                clap::Arg::new("color")
+                    .long("color")
+                    .value_name("WHEN")
+                    .num_args(0..=1)
+                    .default_missing_value("always")
+                    .default_value("auto")
+                    .value_parser(PossibleValuesParser::new(["always", "auto", "never"]))
+                    .help("Use markers to highlight the matching strings")
+            )
     }
 
-    pub fn should_use_color(&self) -> bool {
-        self.color && std::io::stdout().is_terminal()
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        cmd
+    }
+}
+
+impl FromArgMatches for GrepArgs {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> std::result::Result<Self, clap::Error> {
+        let pattern = matches.get_one::<String>("pattern").unwrap();
+        let ignore_case = matches.get_flag("ignore_case");
+
+        let mut builder = RegexBuilder::new(&pattern);
+        builder.case_insensitive(ignore_case);
+        let pattern = builder.build().map_err(|e| {
+            clap::Error::raw(
+                clap::error::ErrorKind::InvalidValue,
+                format!("Invalid regex pattern '{}': {}", pattern, e),
+            )
+        })?;
+
+        let files = matches
+            .get_many::<String>("files")
+            .map(|v| v.cloned().collect())
+            .unwrap_or_else(|| Vec::new());
+
+        let recursive = matches.get_flag("recursive");
+        let count = matches.get_flag("count");
+        let invert_match = matches.get_flag("invert_match");
+        let color = matches.get_one::<String>("color").unwrap();
+        let color = match color.as_str() {
+            "always" => true,
+            "never" => false,
+            "auto" => std::io::stdout().is_terminal(),
+            _ => {
+                panic!("Invalid color option, defaulting to 'auto'");
+            }
+        };
+
+        // 步骤4: 创建完整的 GrepArgs
+        Ok(GrepArgs {
+            pattern,
+            files,
+            recursive,
+            count,
+            invert_match,
+            ignore_case,
+            color,
+        })
+    }
+
+    fn update_from_arg_matches(
+        &mut self,
+        _: &clap::ArgMatches,
+    ) -> std::result::Result<(), clap::Error> {
+        Ok(())
     }
 }
 
@@ -80,7 +157,7 @@ struct LineMatch {
 }
 
 pub fn grep(args: GrepArgs) -> Result<()> {
-    let pattern = args.compiled_pattern().map_err(GrepError::InvalidPattern)?;
+    let pattern = &args.pattern;
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();
@@ -111,7 +188,7 @@ fn grep_interactive<R: BufRead, W: Write>(
     while reader.read_line(&mut buffer)? > 0 {
         let line = buffer.trim_end();
         let has_match = pattern.is_match(line);
-        let colored_output = has_match && args.should_use_color();
+        let colored_output = has_match && args.color;
 
         if colored_output {
             writeln!(writer, "{}", highlight_pattern(line, pattern))?;
@@ -209,8 +286,7 @@ fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
     writer: &mut W,
 ) -> io::Result<()> {
     let path = path.as_ref().to_string_lossy();
-    let color = args.should_use_color();
-    if color {
+    if args.color {
         writeln!(writer, "{}", path.magenta().bold())?;
     } else {
         writeln!(writer, "{}", path)?;
@@ -221,7 +297,7 @@ fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
             writeln!(writer, "")?;
         }
 
-        if color {
+        if args.color {
             write!(
                 writer,
                 "{}:{}",
@@ -243,7 +319,7 @@ fn output_file_match_count<W: Write, P: AsRef<Path>>(
     writer: &mut W,
 ) -> io::Result<()> {
     let file_path = file_path.as_ref().to_string_lossy();
-    if args.should_use_color() {
+    if args.color {
         write!(writer, "{}:{}", file_path.magenta().bold(), count)
     } else {
         write!(writer, "{}:{}", file_path, count)
