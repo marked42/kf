@@ -232,7 +232,7 @@ fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
 
     for file_result in files {
         match file_result {
-            Ok(file_path) => match finder.find_matches_from_file(&file_path, args) {
+            Ok(file_path) => match finder.find_matches_from_file(&file_path) {
                 Ok(result) if !result.matches.is_empty() => {
                     if has_matches {
                         reporter.output_file_separator()?;
@@ -260,17 +260,24 @@ fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
 }
 
 struct FileMatchesReporter<'a, W: Write> {
-    args: &'a GrepArgs,
+    pattern: &'a Regex,
+    count: bool,
+    color: bool,
     writer: &'a mut W,
 }
 
 impl<'a, W: Write> FileMatchesReporter<'a, W> {
     fn new(args: &'a GrepArgs, writer: &'a mut W) -> Self {
-        Self { args, writer }
+        Self {
+            pattern: &args.pattern,
+            count: args.count,
+            color: args.color,
+            writer,
+        }
     }
 
     fn output_file_separator(&mut self) -> io::Result<()> {
-        if !self.args.count {
+        if !self.count {
             self.output_newline()
         } else {
             Ok(())
@@ -278,7 +285,7 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn output_stdin_matches(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
-        if self.args.count {
+        if self.count {
             self.output_matches_count(result)
         } else {
             self.output_matched_lines(result)
@@ -286,7 +293,7 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn output_file_matches(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
-        if self.args.count {
+        if self.count {
             self.output_file_match_count(result)
         } else {
             self.output_file_matched_lines(result)
@@ -326,7 +333,7 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn output_file_path(&mut self, path: &str) -> io::Result<()> {
-        if self.args.color {
+        if self.color {
             write!(self.writer, "{}", path.magenta().bold())
         } else {
             write!(self.writer, "{}", path)
@@ -334,7 +341,7 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn output_line_number(&mut self, line_number: usize) -> io::Result<()> {
-        if self.args.color {
+        if self.color {
             write!(self.writer, "{}:", line_number.to_string().green())
         } else {
             write!(self.writer, "{}:", line_number)
@@ -342,7 +349,7 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn output_line_text(&mut self, line: &str) -> io::Result<()> {
-        if self.args.color {
+        if self.color {
             write!(self.writer, "{}", self.highlight_pattern(line.trim()))?;
         } else {
             write!(self.writer, "{}", line.trim())?;
@@ -355,7 +362,7 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn highlight_pattern<'b>(&self, line: &'b str) -> Cow<'b, str> {
-        self.args.pattern.replace_all(line, "$0".red().to_string())
+        self.pattern.replace_all(line, "$0".red().to_string())
     }
 }
 
