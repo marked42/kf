@@ -156,6 +156,18 @@ struct LineMatch {
     line_number: usize,
 }
 
+#[derive(Debug, Clone)]
+struct FileMatches<'a> {
+    file_path: &'a Path,
+    matches: Vec<LineMatch>,
+}
+
+impl FileMatches<'_> {
+    fn is_empty(&self) -> bool {
+        self.matches.is_empty()
+    }
+}
+
 pub fn grep(args: GrepArgs) -> Result<()> {
     let stdout = io::stdout();
     let mut writer = stdout.lock();
@@ -181,19 +193,12 @@ fn grep_interactive<R: BufRead, W: Write>(
 ) -> io::Result<()> {
     // reuse single String buffer in every loop iteration
     let mut buffer = String::new();
+    let mut reporter = FileMatchesReporter::new(args, writer);
 
     while reader.read_line(&mut buffer)? > 0 {
         let line = buffer.trim_end();
-        let has_match = args.pattern.is_match(line);
-        let colored_output = has_match && args.color;
-
-        if colored_output {
-            writeln!(writer, "{}", highlight_pattern(line, &args.pattern))?;
-        } else {
-            writeln!(writer, "{}", line)?;
-        }
-
-        // read_line appends to buffer, clear buffer after iteration
+        reporter.output_line_text(line)?;
+        reporter.output_newline()?;
         buffer.clear();
     }
 
@@ -204,30 +209,36 @@ fn grep_stdin<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     let reader = std::io::stdin().lock();
     if reader.is_terminal() {
         grep_interactive(reader, args, writer)?;
-        Ok(true)
-    } else {
-        // redirect stdout to pipe
-        let matches = find_matches_in_reader(reader, args)?;
-        let has_matches = !matches.is_empty();
-        if has_matches {
-            output_file_matches(&"stdin", &matches, args, writer)?;
-        }
-        Ok(has_matches)
+        return Ok(true);
     }
+
+    // redirect stdout to pipe
+    let finder = MatchesFinder::new();
+    let result = finder.find_matches_in_stdin(reader, args)?;
+    if result.is_empty() {
+        return Ok(false);
+    }
+
+    let mut reporter = FileMatchesReporter::new(args, writer);
+    reporter.output_file_matches(&result)?;
+    Ok(true)
 }
 
 fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     let files = find_files(args.files.as_slice(), args.recursive);
     let mut has_matches = false;
 
-    for (i, file_result) in files.into_iter().enumerate() {
+    let finder = MatchesFinder::new();
+    let mut reporter = FileMatchesReporter::new(args, writer);
+
+    for file_result in files {
         match file_result {
-            Ok(file_path) => match find_matches_in_file(&file_path, args) {
-                Ok(lines) if !lines.is_empty() => {
+            Ok(file_path) => match finder.find_matches_in_file(&file_path, args) {
+                Ok(result) if !result.matches.is_empty() => {
                     if has_matches {
-                        output_file_match_separator(i, args.count, writer)?;
+                        reporter.output_file_separator()?;
                     }
-                    output_file_matches(&file_path, &lines, args, writer)?;
+                    reporter.output_file_matches(&result)?;
                     has_matches = true;
                 }
                 Ok(_) => continue,
@@ -254,70 +265,88 @@ fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     Ok(has_matches)
 }
 
-fn output_file_match_separator<W: Write>(i: usize, count: bool, writer: &mut W) -> io::Result<()> {
-    if i > 0 {
-        write!(writer, "{}", if count { "\n" } else { "\n\n" })?;
-    }
-    Ok(())
+struct FileMatchesReporter<'a, W: Write> {
+    args: &'a GrepArgs,
+    writer: &'a mut W,
 }
 
-fn output_file_matches<W: Write, P: AsRef<Path>>(
-    file_path: &P,
-    lines: &Vec<LineMatch>,
-    args: &GrepArgs,
-    writer: &mut W,
-) -> io::Result<()> {
-    if args.count {
-        output_file_match_count(file_path, lines.len(), args, writer)
-    } else {
-        output_file_matched_lines(file_path, lines, args, writer)
-    }
-}
-
-fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
-    path: &P,
-    lines: &Vec<LineMatch>,
-    args: &GrepArgs,
-    writer: &mut W,
-) -> io::Result<()> {
-    let path = path.as_ref().to_string_lossy();
-    if args.color {
-        writeln!(writer, "{}", path.magenta().bold())?;
-    } else {
-        writeln!(writer, "{}", path)?;
+impl<'a, W: Write> FileMatchesReporter<'a, W> {
+    fn new(args: &'a GrepArgs, writer: &'a mut W) -> Self {
+        Self { args, writer }
     }
 
-    for (index, LineMatch { line, line_number }) in lines.iter().enumerate() {
-        if index > 0 {
-            writeln!(writer, "")?;
-        }
+    fn output_file_separator(&mut self) -> io::Result<()> {
+        write!(
+            self.writer,
+            "{}",
+            if self.args.count { "\n" } else { "\n\n" }
+        )
+    }
 
-        if args.color {
-            write!(
-                writer,
-                "{}:{}",
-                line_number.to_string().green(),
-                highlight_pattern(line.trim(), &args.pattern)
-            )?;
+    fn output_file_matches(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
+        if self.args.count {
+            self.output_file_match_count(result)
         } else {
-            write!(writer, "{}:{}", line_number, line.trim())?;
+            self.output_file_matched_lines(result)
         }
     }
 
-    Ok(())
-}
+    fn output_file_match_count(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
+        let file_path = result.file_path.to_string_lossy();
 
-fn output_file_match_count<W: Write, P: AsRef<Path>>(
-    file_path: &P,
-    count: usize,
-    args: &GrepArgs,
-    writer: &mut W,
-) -> io::Result<()> {
-    let file_path = file_path.as_ref().to_string_lossy();
-    if args.color {
-        write!(writer, "{}:{}", file_path.magenta().bold(), count)
-    } else {
-        write!(writer, "{}:{}", file_path, count)
+        self.output_file_path(&file_path)?;
+        write!(self.writer, ":{}", result.matches.len())
+    }
+
+    fn output_file_matched_lines(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
+        let path = result.file_path.to_string_lossy();
+
+        self.output_file_path(&path)?;
+        for (index, LineMatch { line, line_number }) in result.matches.iter().enumerate() {
+            if index > 0 {
+                self.output_line_separator()?;
+            }
+            self.output_line_number(*line_number)?;
+            self.output_line_text(line)?;
+        }
+
+        Ok(())
+    }
+
+    fn output_line_separator(&mut self) -> io::Result<()> {
+        self.output_newline()
+    }
+
+    fn output_file_path(&mut self, path: &str) -> io::Result<()> {
+        if self.args.color {
+            writeln!(self.writer, "{}", path.magenta().bold())
+        } else {
+            writeln!(self.writer, "{}", path)
+        }
+    }
+
+    fn output_line_number(&mut self, line_number: usize) -> io::Result<()> {
+        if self.args.color {
+            write!(self.writer, "{}:", line_number.to_string().green())
+        } else {
+            write!(self.writer, "{}:", line_number)
+        }
+    }
+
+    fn output_line_text(&mut self, line: &str) -> io::Result<()> {
+        if self.args.color {
+            write!(self.writer, "{}", self.highlight_pattern(line.trim()))
+        } else {
+            write!(self.writer, "{}", line.trim())
+        }
+    }
+
+    fn output_newline(&mut self) -> io::Result<()> {
+        writeln!(self.writer, "")
+    }
+
+    fn highlight_pattern<'b>(&self, line: &'b str) -> Cow<'b, str> {
+        self.args.pattern.replace_all(line, "$0".red().to_string())
     }
 }
 
@@ -377,28 +406,57 @@ fn find_files_in_dir<P: AsRef<Path>>(dir_path: &P, recursive: bool) -> io::Resul
     Ok(files)
 }
 
-fn find_matches_in_file<P: AsRef<Path>>(file: &P, args: &GrepArgs) -> io::Result<Vec<LineMatch>> {
-    let reader = BufReader::new(File::open(file)?);
-    find_matches_in_reader(reader, args)
-}
+struct MatchesFinder {}
 
-fn find_matches_in_reader<R: BufRead>(reader: R, args: &GrepArgs) -> io::Result<Vec<LineMatch>> {
-    let mut matches = vec![];
-
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        let matched = args.pattern.is_match(&line);
-        if matched ^ args.invert_match {
-            matches.push(LineMatch {
-                line,
-                line_number: index + 1,
-            });
-        }
+impl MatchesFinder {
+    fn new() -> Self {
+        MatchesFinder {}
     }
 
-    Ok(matches)
-}
+    fn find_matches_in_file<'a, P: AsRef<Path>>(
+        &self,
+        file: &'a P,
+        args: &GrepArgs,
+    ) -> io::Result<FileMatches<'a>> {
+        let reader = BufReader::new(File::open(file)?);
+        let matches = self.find_matches_in_reader(reader, args)?;
 
-fn highlight_pattern<'a>(line: &'a str, pattern: &Regex) -> Cow<'a, str> {
-    pattern.replace_all(line, "$0".red().to_string())
+        Ok(FileMatches {
+            file_path: file.as_ref(),
+            matches,
+        })
+    }
+
+    fn find_matches_in_stdin<R: BufRead>(
+        &self,
+        reader: R,
+        args: &GrepArgs,
+    ) -> io::Result<FileMatches<'_>> {
+        Ok(FileMatches {
+            file_path: Path::new("stdin"),
+            matches: self.find_matches_in_reader(reader, args)?,
+        })
+    }
+
+    fn find_matches_in_reader<R: BufRead>(
+        &self,
+        reader: R,
+        args: &GrepArgs,
+    ) -> io::Result<Vec<LineMatch>> {
+        let mut matches = vec![];
+
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            // TODO: util function
+            let matched = args.pattern.is_match(&line);
+            if matched ^ args.invert_match {
+                matches.push(LineMatch {
+                    line,
+                    line_number: index + 1,
+                });
+            }
+        }
+
+        Ok(matches)
+    }
 }
