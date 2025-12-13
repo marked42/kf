@@ -198,7 +198,6 @@ fn grep_interactive<R: BufRead, W: Write>(
     while reader.read_line(&mut buffer)? > 0 {
         let line = buffer.trim_end();
         reporter.output_line_text(line)?;
-        reporter.output_newline()?;
         buffer.clear();
     }
 
@@ -214,13 +213,13 @@ fn grep_stdin<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
 
     // redirect stdout to pipe
     let finder = MatchesFinder::new();
-    let result = finder.find_matches_in_stdin(reader, args)?;
+    let result = finder.find_matches_from_stdin(reader, args)?;
     if result.is_empty() {
         return Ok(false);
     }
 
     let mut reporter = FileMatchesReporter::new(args, writer);
-    reporter.output_file_matches(&result)?;
+    reporter.output_stdin_matches(&result)?;
     Ok(true)
 }
 
@@ -233,7 +232,7 @@ fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
 
     for file_result in files {
         match file_result {
-            Ok(file_path) => match finder.find_matches_in_file(&file_path, args) {
+            Ok(file_path) => match finder.find_matches_from_file(&file_path, args) {
                 Ok(result) if !result.matches.is_empty() => {
                     if has_matches {
                         reporter.output_file_separator()?;
@@ -257,11 +256,6 @@ fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
         }
     }
 
-    // zsh would print '%' when output not ending with newline
-    if has_matches {
-        writeln!(writer, "")?;
-    }
-
     Ok(has_matches)
 }
 
@@ -276,11 +270,19 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn output_file_separator(&mut self) -> io::Result<()> {
-        write!(
-            self.writer,
-            "{}",
-            if self.args.count { "\n" } else { "\n\n" }
-        )
+        if !self.args.count {
+            self.output_newline()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn output_stdin_matches(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
+        if self.args.count {
+            self.output_matches_count(result)
+        } else {
+            self.output_matched_lines(result)
+        }
     }
 
     fn output_file_matches(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
@@ -291,21 +293,31 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
         }
     }
 
+    fn output_matches_count(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
+        write!(self.writer, "{}", result.matches.len())?;
+        self.output_newline()
+    }
+
     fn output_file_match_count(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
         let file_path = result.file_path.to_string_lossy();
 
         self.output_file_path(&file_path)?;
-        write!(self.writer, ":{}", result.matches.len())
+        write!(self.writer, ":")?;
+        self.output_matches_count(result)
     }
 
     fn output_file_matched_lines(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
         let path = result.file_path.to_string_lossy();
 
         self.output_file_path(&path)?;
-        for (index, LineMatch { line, line_number }) in result.matches.iter().enumerate() {
-            if index > 0 {
-                self.output_line_separator()?;
-            }
+        self.output_newline()?;
+        self.output_matched_lines(result)?;
+
+        Ok(())
+    }
+
+    fn output_matched_lines(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
+        for LineMatch { line, line_number } in &result.matches {
             self.output_line_number(*line_number)?;
             self.output_line_text(line)?;
         }
@@ -313,15 +325,11 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
         Ok(())
     }
 
-    fn output_line_separator(&mut self) -> io::Result<()> {
-        self.output_newline()
-    }
-
     fn output_file_path(&mut self, path: &str) -> io::Result<()> {
         if self.args.color {
-            writeln!(self.writer, "{}", path.magenta().bold())
+            write!(self.writer, "{}", path.magenta().bold())
         } else {
-            writeln!(self.writer, "{}", path)
+            write!(self.writer, "{}", path)
         }
     }
 
@@ -335,14 +343,15 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
 
     fn output_line_text(&mut self, line: &str) -> io::Result<()> {
         if self.args.color {
-            write!(self.writer, "{}", self.highlight_pattern(line.trim()))
+            write!(self.writer, "{}", self.highlight_pattern(line.trim()))?;
         } else {
-            write!(self.writer, "{}", line.trim())
+            write!(self.writer, "{}", line.trim())?;
         }
+        self.output_newline()
     }
 
     fn output_newline(&mut self) -> io::Result<()> {
-        writeln!(self.writer, "")
+        writeln!(self.writer)
     }
 
     fn highlight_pattern<'b>(&self, line: &'b str) -> Cow<'b, str> {
@@ -413,13 +422,13 @@ impl MatchesFinder {
         MatchesFinder {}
     }
 
-    fn find_matches_in_file<'a, P: AsRef<Path>>(
+    fn find_matches_from_file<'a, P: AsRef<Path>>(
         &self,
         file: &'a P,
         args: &GrepArgs,
     ) -> io::Result<FileMatches<'a>> {
         let reader = BufReader::new(File::open(file)?);
-        let matches = self.find_matches_in_reader(reader, args)?;
+        let matches = self.find_matches_from_reader(reader, args)?;
 
         Ok(FileMatches {
             file_path: file.as_ref(),
@@ -427,18 +436,18 @@ impl MatchesFinder {
         })
     }
 
-    fn find_matches_in_stdin<R: BufRead>(
+    fn find_matches_from_stdin<R: BufRead>(
         &self,
         reader: R,
         args: &GrepArgs,
     ) -> io::Result<FileMatches<'_>> {
         Ok(FileMatches {
             file_path: Path::new("stdin"),
-            matches: self.find_matches_in_reader(reader, args)?,
+            matches: self.find_matches_from_reader(reader, args)?,
         })
     }
 
-    fn find_matches_in_reader<R: BufRead>(
+    fn find_matches_from_reader<R: BufRead>(
         &self,
         reader: R,
         args: &GrepArgs,
@@ -447,7 +456,7 @@ impl MatchesFinder {
 
         for (index, line) in reader.lines().enumerate() {
             let line = line?;
-            // TODO: util function
+            // TODO: util function group pattern, invert match together
             let matched = args.pattern.is_match(&line);
             if matched ^ args.invert_match {
                 matches.push(LineMatch {
