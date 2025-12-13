@@ -157,15 +157,13 @@ struct LineMatch {
 }
 
 pub fn grep(args: GrepArgs) -> Result<()> {
-    let pattern = &args.pattern;
-
     let stdout = io::stdout();
     let mut writer = stdout.lock();
 
     let has_matches = if args.files.is_empty() {
-        grep_stdin(&pattern, &args, &mut writer)?
+        grep_stdin(&args, &mut writer)?
     } else {
-        grep_files(&pattern, &args, &mut writer)?
+        grep_files(&args, &mut writer)?
     };
     writer.flush()?;
 
@@ -178,7 +176,6 @@ pub fn grep(args: GrepArgs) -> Result<()> {
 
 fn grep_interactive<R: BufRead, W: Write>(
     mut reader: R,
-    pattern: &Regex,
     args: &GrepArgs,
     writer: &mut W,
 ) -> io::Result<()> {
@@ -187,11 +184,11 @@ fn grep_interactive<R: BufRead, W: Write>(
 
     while reader.read_line(&mut buffer)? > 0 {
         let line = buffer.trim_end();
-        let has_match = pattern.is_match(line);
+        let has_match = args.pattern.is_match(line);
         let colored_output = has_match && args.color;
 
         if colored_output {
-            writeln!(writer, "{}", highlight_pattern(line, pattern))?;
+            writeln!(writer, "{}", highlight_pattern(line, &args.pattern))?;
         } else {
             writeln!(writer, "{}", line)?;
         }
@@ -203,34 +200,34 @@ fn grep_interactive<R: BufRead, W: Write>(
     Ok(())
 }
 
-fn grep_stdin<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
+fn grep_stdin<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     let reader = std::io::stdin().lock();
     if reader.is_terminal() {
-        grep_interactive(reader, &pattern, args, writer)?;
+        grep_interactive(reader, args, writer)?;
         Ok(true)
     } else {
         // redirect stdout to pipe
-        let matches = find_matches_in_reader(reader, pattern, args.invert_match)?;
+        let matches = find_matches_in_reader(reader, args)?;
         let has_matches = !matches.is_empty();
         if has_matches {
-            output_file_matches(&"stdin", &matches, pattern, args, writer)?;
+            output_file_matches(&"stdin", &matches, args, writer)?;
         }
         Ok(has_matches)
     }
 }
 
-fn grep_files<W: Write>(pattern: &Regex, args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
+fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     let files = find_files(args.files.as_slice(), args.recursive);
     let mut has_matches = false;
 
     for (i, file_result) in files.into_iter().enumerate() {
         match file_result {
-            Ok(file_path) => match find_matches_in_file(&file_path, &pattern, args.invert_match) {
+            Ok(file_path) => match find_matches_in_file(&file_path, args) {
                 Ok(lines) if !lines.is_empty() => {
                     if has_matches {
                         output_file_match_separator(i, args.count, writer)?;
                     }
-                    output_file_matches(&file_path, &lines, pattern, args, writer)?;
+                    output_file_matches(&file_path, &lines, args, writer)?;
                     has_matches = true;
                 }
                 Ok(_) => continue,
@@ -267,21 +264,19 @@ fn output_file_match_separator<W: Write>(i: usize, count: bool, writer: &mut W) 
 fn output_file_matches<W: Write, P: AsRef<Path>>(
     file_path: &P,
     lines: &Vec<LineMatch>,
-    pattern: &Regex,
     args: &GrepArgs,
     writer: &mut W,
 ) -> io::Result<()> {
     if args.count {
         output_file_match_count(file_path, lines.len(), args, writer)
     } else {
-        output_file_matched_lines(file_path, lines, &pattern, args, writer)
+        output_file_matched_lines(file_path, lines, args, writer)
     }
 }
 
 fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
     path: &P,
     lines: &Vec<LineMatch>,
-    pattern: &Regex,
     args: &GrepArgs,
     writer: &mut W,
 ) -> io::Result<()> {
@@ -302,7 +297,7 @@ fn output_file_matched_lines<W: Write, P: AsRef<Path>>(
                 writer,
                 "{}:{}",
                 line_number.to_string().green(),
-                highlight_pattern(line.trim(), pattern)
+                highlight_pattern(line.trim(), &args.pattern)
             )?;
         } else {
             write!(writer, "{}:{}", line_number, line.trim())?;
@@ -382,26 +377,18 @@ fn find_files_in_dir<P: AsRef<Path>>(dir_path: &P, recursive: bool) -> io::Resul
     Ok(files)
 }
 
-fn find_matches_in_file<P: AsRef<Path>>(
-    file: &P,
-    pattern: &Regex,
-    invert_match: bool,
-) -> io::Result<Vec<LineMatch>> {
+fn find_matches_in_file<P: AsRef<Path>>(file: &P, args: &GrepArgs) -> io::Result<Vec<LineMatch>> {
     let reader = BufReader::new(File::open(file)?);
-    find_matches_in_reader(reader, pattern, invert_match)
+    find_matches_in_reader(reader, args)
 }
 
-fn find_matches_in_reader<R: BufRead>(
-    reader: R,
-    pattern: &Regex,
-    invert_match: bool,
-) -> io::Result<Vec<LineMatch>> {
+fn find_matches_in_reader<R: BufRead>(reader: R, args: &GrepArgs) -> io::Result<Vec<LineMatch>> {
     let mut matches = vec![];
 
     for (index, line) in reader.lines().enumerate() {
         let line = line?;
-        let matched = pattern.is_match(&line);
-        if matched ^ invert_match {
+        let matched = args.pattern.is_match(&line);
+        if matched ^ args.invert_match {
             matches.push(LineMatch {
                 line,
                 line_number: index + 1,
