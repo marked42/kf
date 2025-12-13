@@ -212,8 +212,8 @@ fn grep_stdin<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     }
 
     // redirect stdout to pipe
-    let finder = MatchesFinder::new();
-    let result = finder.find_matches_from_stdin(reader, args)?;
+    let finder = MatchesFinder::from_args(args);
+    let result = finder.find_matches_from_stdin(reader)?;
     if result.is_empty() {
         return Ok(false);
     }
@@ -227,7 +227,7 @@ fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     let files = find_files(args.files.as_slice(), args.recursive);
     let mut has_matches = false;
 
-    let finder = MatchesFinder::new();
+    let finder = MatchesFinder::from_args(args);
     let mut reporter = FileMatchesReporter::new(args, writer);
 
     for file_result in files {
@@ -415,20 +415,25 @@ fn find_files_in_dir<P: AsRef<Path>>(dir_path: &P, recursive: bool) -> io::Resul
     Ok(files)
 }
 
-struct MatchesFinder {}
+struct MatchesFinder<'a> {
+    pattern: &'a Regex,
+    invert_match: bool,
+}
 
-impl MatchesFinder {
-    fn new() -> Self {
-        MatchesFinder {}
+impl<'a> MatchesFinder<'a> {
+    fn from_args(args: &'a GrepArgs) -> Self {
+        MatchesFinder {
+            pattern: &args.pattern,
+            invert_match: args.invert_match,
+        }
     }
 
-    fn find_matches_from_file<'a, P: AsRef<Path>>(
+    fn find_matches_from_file<'b, P: AsRef<Path>>(
         &self,
-        file: &'a P,
-        args: &GrepArgs,
-    ) -> io::Result<FileMatches<'a>> {
+        file: &'b P,
+    ) -> io::Result<FileMatches<'b>> {
         let reader = BufReader::new(File::open(file)?);
-        let matches = self.find_matches_from_reader(reader, args)?;
+        let matches = self.find_matches_from_reader(reader)?;
 
         Ok(FileMatches {
             file_path: file.as_ref(),
@@ -436,29 +441,19 @@ impl MatchesFinder {
         })
     }
 
-    fn find_matches_from_stdin<R: BufRead>(
-        &self,
-        reader: R,
-        args: &GrepArgs,
-    ) -> io::Result<FileMatches<'_>> {
+    fn find_matches_from_stdin<R: BufRead>(&self, reader: R) -> io::Result<FileMatches<'_>> {
         Ok(FileMatches {
             file_path: Path::new("stdin"),
-            matches: self.find_matches_from_reader(reader, args)?,
+            matches: self.find_matches_from_reader(reader)?,
         })
     }
 
-    fn find_matches_from_reader<R: BufRead>(
-        &self,
-        reader: R,
-        args: &GrepArgs,
-    ) -> io::Result<Vec<LineMatch>> {
+    fn find_matches_from_reader<R: BufRead>(&self, reader: R) -> io::Result<Vec<LineMatch>> {
         let mut matches = vec![];
 
         for (index, line) in reader.lines().enumerate() {
             let line = line?;
-            // TODO: util function group pattern, invert match together
-            let matched = args.pattern.is_match(&line);
-            if matched ^ args.invert_match {
+            if self.is_match(&line) {
                 matches.push(LineMatch {
                     line,
                     line_number: index + 1,
@@ -467,5 +462,9 @@ impl MatchesFinder {
         }
 
         Ok(matches)
+    }
+
+    fn is_match(&self, line: &str) -> bool {
+        self.pattern.is_match(line) ^ self.invert_match
     }
 }
