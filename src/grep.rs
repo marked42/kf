@@ -363,7 +363,11 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn highlight_pattern<'b>(&self, line: &'b str) -> Cow<'b, str> {
-        self.pattern.replace_all(line, "$0".red().to_string())
+        if self.color && self.pattern.is_match(line) {
+            self.pattern.replace_all(line, "$0".red().to_string())
+        } else {
+            Cow::Borrowed(line)
+        }
     }
 }
 
