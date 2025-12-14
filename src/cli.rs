@@ -1,7 +1,7 @@
 pub use clap::{Parser, Subcommand};
 use thiserror::Error;
 
-use crate::{GrepArgs, GrepError};
+use crate::{GrepArgs, GrepError, ViewArgs, ViewError};
 
 pub type Result<T> = std::result::Result<T, CliError>;
 
@@ -21,6 +21,8 @@ pub struct Cli {
 pub enum Command {
     /// Searches pattern in target files or directories
     Grep(GrepArgs),
+    /// View specified file in different formats
+    View(ViewArgs),
 }
 
 #[derive(Error, Debug)]
@@ -31,4 +33,7 @@ pub enum CliError {
 
     #[error(transparent)]
     Grep(#[from] GrepError),
+
+    #[error(transparent)]
+    View(#[from] ViewError),
 }
