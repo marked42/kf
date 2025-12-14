@@ -469,19 +469,18 @@ impl<'a> MatchesFinder<'a> {
     }
 
     fn find_matches_from_reader<R: BufRead>(&self, reader: R) -> io::Result<Vec<LineMatch>> {
-        let mut matches = vec![];
-
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            if self.is_match(&line) {
-                matches.push(LineMatch {
+        reader
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| match line {
+                Ok(line) if self.is_match(&line) => Some(Ok(LineMatch {
                     line,
                     line_number: index + 1,
-                });
-            }
-        }
-
-        Ok(matches)
+                })),
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
+            })
+            .collect()
     }
 
     fn is_match(&self, line: &str) -> bool {
