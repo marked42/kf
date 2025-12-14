@@ -1,6 +1,6 @@
 use std::process;
 
-use kf::{CliError, Parser, Result, cli, grep};
+use kf::{CliError, Parser, Result, cli, grep, view};
 
 fn main() {
     match try_main() {
@@ -20,6 +20,10 @@ fn main() {
                 process::exit(2);
             }
         },
+        Err(CliError::View(e)) => {
+            eprintln!("view error: {}", e);
+            process::exit(3);
+        }
     }
 }
 
@@ -28,6 +32,7 @@ fn try_main() -> Result<()> {
 
     match cli.command {
         cli::Command::Grep(args) => grep::grep(args)?,
+        cli::Command::View(args) => view::view_file(args)?,
     }
 
     Ok(())
