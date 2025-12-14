@@ -161,7 +161,7 @@ struct LineMatch {
     line_number: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct FileMatches<'a> {
     file_path: &'a Path,
     matches: Vec<LineMatch>,
