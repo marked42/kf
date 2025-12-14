@@ -13,7 +13,7 @@ use thiserror::Error;
 #[derive(Debug)]
 pub struct GrepArgs {
     pub pattern: Regex,
-    pub files: Vec<String>,
+    pub files: Vec<PathBuf>,
     pub recursive: bool,
     pub count: bool,
     pub invert_match: bool,
@@ -86,7 +86,12 @@ impl Args for GrepArgs {
 
 impl FromArgMatches for GrepArgs {
     fn from_arg_matches(matches: &clap::ArgMatches) -> std::result::Result<Self, clap::Error> {
-        let pattern = matches.get_one::<String>("pattern").unwrap();
+        let pattern = matches.get_one::<String>("pattern").ok_or_else(|| {
+            clap::Error::raw(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "Pattern argument is required",
+            )
+        })?;
         let ignore_case = matches.get_flag("ignore_case");
 
         let mut builder = RegexBuilder::new(&pattern);
@@ -100,20 +105,20 @@ impl FromArgMatches for GrepArgs {
 
         let files = matches
             .get_many::<String>("files")
-            .map(|v| v.cloned().collect())
-            .unwrap_or_else(|| Vec::new());
+            .map(|v| v.map(|s| s.into()).collect())
+            .unwrap_or_default();
 
         let recursive = matches.get_flag("recursive");
         let count = matches.get_flag("count");
         let invert_match = matches.get_flag("invert_match");
-        let color = matches.get_one::<String>("color").unwrap();
+        let color = matches
+            .get_one::<String>("color")
+            .expect("Color option should have a default value");
         let color = match color.as_str() {
             "always" => true,
             "never" => false,
             "auto" => std::io::stdout().is_terminal(),
-            _ => {
-                panic!("Invalid color option, defaulting to 'auto'");
-            }
+            _ => unreachable!("color value parser ensures this doesn't happen"),
         };
 
         // 步骤4: 创建完整的 GrepArgs
@@ -224,15 +229,14 @@ fn grep_stdin<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
 }
 
 fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
-    let files = find_files(args.files.as_slice(), args.recursive);
-    let mut has_matches = false;
-
-    let finder = MatchesFinder::from_args(args);
+    let files_finder = FilesFinder::from_args(args);
+    let matches_finder = MatchesFinder::from_args(args);
     let mut reporter = FileMatchesReporter::new(args, writer);
 
-    for file_result in files {
+    let mut has_matches = false;
+    for file_result in files_finder.find_files() {
         match file_result {
-            Ok(file_path) => match finder.find_matches_from_file(&file_path) {
+            Ok(file_path) => match matches_finder.find_matches_from_file(&file_path) {
                 Ok(result) if !result.matches.is_empty() => {
                     if has_matches {
                         reporter.output_file_separator()?;
@@ -366,27 +370,48 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 }
 
-fn find_files<P: AsRef<Path>>(paths: &[P], recursive: bool) -> Vec<std::io::Result<PathBuf>> {
-    let mut files = vec![];
+struct FilesFinder<'a> {
+    files: &'a [PathBuf],
+    recursive: bool,
+}
 
-    for path in paths {
-        let path = path.as_ref();
+impl<'a> FilesFinder<'a> {
+    fn from_args(args: &'a GrepArgs) -> Self {
+        Self {
+            files: &args.files,
+            recursive: args.recursive,
+        }
+    }
+
+    // TODO: use iterator to avoid collecting all files at once
+    fn find_files(&self) -> Vec<std::io::Result<PathBuf>> {
+        let mut result = vec![];
+
+        for path in self.files {
+            result.append(&mut self.find_files_at_path(path.as_path()));
+        }
+
+        result
+    }
+
+    fn find_files_at_path(&self, path: &Path) -> Vec<std::io::Result<PathBuf>> {
+        let mut result = vec![];
         let metadata = fs::metadata(path);
 
         match metadata {
             Ok(f) => {
                 if f.is_file() {
-                    files.push(Ok(path.to_path_buf()));
+                    result.push(Ok(path.to_path_buf()));
                 } else if f.is_dir() {
-                    if recursive {
-                        match find_files_in_dir(&path, recursive) {
-                            Err(e) => files.push(Err(e)),
+                    if self.recursive {
+                        match self.find_files_in_dir(&path) {
+                            Err(e) => result.push(Err(e)),
                             Ok(sub_files) => {
-                                files.extend(sub_files.into_iter().map(Ok));
+                                result.extend(sub_files.into_iter().map(Ok));
                             }
                         }
                     } else {
-                        files.push(Err(io::Error::new(
+                        result.push(Err(io::Error::new(
                             io::ErrorKind::Other,
                             format!(
                                 "{} is a directory, use -r to search recursively",
@@ -397,29 +422,29 @@ fn find_files<P: AsRef<Path>>(paths: &[P], recursive: bool) -> Vec<std::io::Resu
                 }
             }
             Err(e) => {
-                files.push(Err(e));
+                result.push(Err(e));
             }
         }
+
+        result
     }
 
-    files
-}
+    fn find_files_in_dir<P: AsRef<Path>>(&self, dir_path: &P) -> io::Result<Vec<PathBuf>> {
+        let mut files = vec![];
 
-fn find_files_in_dir<P: AsRef<Path>>(dir_path: &P, recursive: bool) -> io::Result<Vec<PathBuf>> {
-    let mut files = vec![];
-
-    for entry in fs::read_dir(dir_path)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            files.push(path);
-        } else if path.is_dir() && recursive {
-            let mut nested_files = find_files_in_dir(&path, recursive)?;
-            files.append(&mut nested_files);
+        for entry in fs::read_dir(dir_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                files.push(path);
+            } else if path.is_dir() && self.recursive {
+                let mut nested_files = self.find_files_in_dir(&path)?;
+                files.append(&mut nested_files);
+            }
         }
-    }
 
-    Ok(files)
+        Ok(files)
+    }
 }
 
 struct MatchesFinder<'a> {
