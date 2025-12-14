@@ -382,13 +382,7 @@ impl<'a> FilesFinder<'a> {
 
     // TODO: use iterator to avoid collecting all files at once
     fn find_files(&self) -> Vec<std::io::Result<PathBuf>> {
-        let mut result = vec![];
-
-        for path in self.files {
-            result.append(&mut self.find_files_at_path(path.as_path()));
-        }
-
-        result
+        self.files.iter().flat_map(|path| self.find_files_at_path(path)).collect()
     }
 
     fn find_files_at_path(&self, path: &Path) -> Vec<std::io::Result<PathBuf>> {
