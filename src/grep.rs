@@ -117,7 +117,7 @@ impl FromArgMatches for GrepArgs {
         let color = match color.as_str() {
             "always" => true,
             "never" => false,
-            "auto" => std::io::stdout().is_terminal(),
+            "auto" => io::stdout().is_terminal(),
             _ => unreachable!("color value parser ensures this doesn't happen"),
         };
 
@@ -310,17 +310,13 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
     }
 
     fn output_file_match_count(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
-        let file_path = result.file_path.to_string_lossy();
-
-        self.output_file_path(&file_path)?;
+        self.output_file_path(&result.file_path)?;
         write!(self.writer, ":")?;
         self.output_matches_count(result)
     }
 
     fn output_file_matched_lines(&mut self, result: &FileMatches<'_>) -> io::Result<()> {
-        let path = result.file_path.to_string_lossy();
-
-        self.output_file_path(&path)?;
+        self.output_file_path(&result.file_path)?;
         self.output_newline()?;
         self.output_matched_lines(result)?;
 
@@ -336,7 +332,8 @@ impl<'a, W: Write> FileMatchesReporter<'a, W> {
         Ok(())
     }
 
-    fn output_file_path(&mut self, path: &str) -> io::Result<()> {
+    fn output_file_path(&mut self, path: &Path) -> io::Result<()> {
+        let path = path.to_string_lossy();
         if self.color {
             write!(self.writer, "{}", path.magenta().bold())
         } else {
@@ -460,15 +457,12 @@ impl<'a> MatchesFinder<'a> {
         }
     }
 
-    fn find_matches_from_file<'b, P: AsRef<Path>>(
-        &self,
-        file: &'b P,
-    ) -> io::Result<FileMatches<'b>> {
+    fn find_matches_from_file<'b>(&self, file: &'b Path) -> io::Result<FileMatches<'b>> {
         let reader = BufReader::new(File::open(file)?);
         let matches = self.find_matches_from_reader(reader)?;
 
         Ok(FileMatches {
-            file_path: file.as_ref(),
+            file_path: file,
             matches,
         })
     }
