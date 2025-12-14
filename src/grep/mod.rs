@@ -74,6 +74,7 @@ fn grep_interactive_stdin<R: BufRead, W: Write>(
     Ok(())
 }
 
+// TODO: multithreaded grep
 fn grep_files<W: Write>(args: &GrepArgs, writer: &mut W) -> io::Result<bool> {
     let files_finder = FilesFinder::from_args(args);
     let matches_finder = MatchesFinder::from_args(args);
