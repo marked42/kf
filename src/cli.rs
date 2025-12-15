@@ -1,7 +1,7 @@
 pub use clap::{Parser, Subcommand};
 use thiserror::Error;
 
-use crate::{GrepArgs, GrepError, ViewArgs, ViewError};
+use crate::{EchoArgs, EchoError, GrepArgs, GrepError, ViewArgs, ViewError};
 
 pub type Result<T> = std::result::Result<T, CliError>;
 
@@ -23,6 +23,8 @@ pub enum Command {
     Grep(GrepArgs),
     /// View specified file in different formats
     View(ViewArgs),
+    /// Echo command
+    Echo(EchoArgs),
 }
 
 #[derive(Error, Debug)]
@@ -36,4 +38,7 @@ pub enum CliError {
 
     #[error(transparent)]
     View(#[from] ViewError),
+
+    #[error(transparent)]
+    Echo(#[from] EchoError),
 }
