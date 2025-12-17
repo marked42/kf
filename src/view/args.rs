@@ -8,11 +8,13 @@ const BYTES_PER_LINE: u64 = 16;
 
 #[derive(Debug, Parser)]
 pub struct ViewArgs {
-    // TODO: view from stdin when no file specified
-    #[arg(index = 1, help = "File to view in specified format")]
+    #[arg(
+        index = 1,
+        help = "Files to view in specified format, standard input use when not files specified"
+    )]
     pub file_paths: Vec<PathBuf>,
 
-    #[arg(long, help = "Output format", default_value = "text")]
+    #[arg(long, help = "File format", default_value = "text")]
     pub format: FileFormat,
 
     #[arg(long,

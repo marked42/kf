@@ -1,6 +1,6 @@
-use std::io::{BufRead, BufReader};
+use std::fs::File;
+use std::io::{BufRead, BufReader, IsTerminal};
 use std::path::Path;
-use std::{fs::File, io::Read};
 
 mod args;
 mod error;
@@ -21,12 +21,41 @@ pub fn view_files(args: ViewArgs) -> Result<()> {
 }
 
 fn view_stdin(args: &ViewArgs) -> Result<()> {
-    todo!("stdin");
+    let mut reader = std::io::stdin().lock();
+    if reader.is_terminal() {
+        view_interactive_stdin(&mut reader, args)
+    } else {
+        view_piped_stdin(&mut reader, args)
+    }
+}
+
+fn view_interactive_stdin(reader: &mut impl BufRead, args: &ViewArgs) -> Result<()> {
+    // reuse single String buffer in every loop iteration
+    let mut buffer = String::new();
+
+    while reader.read_line(&mut buffer)? > 0 {
+        let line = buffer.trim_end();
+        println!("{}", line);
+        buffer.clear();
+    }
+
+    Ok(())
+}
+
+fn view_piped_stdin(reader: &mut impl BufRead, args: &ViewArgs) -> Result<()> {
+    view_reader_of_format(reader, args)
 }
 
 fn view_single_file(args: &ViewArgs) -> Result<()> {
     let file_path = &args.file_paths[0];
-    view_file_of_format(file_path, &args)
+    view_single_file_by_path(file_path, args)
+}
+
+fn view_single_file_by_path(file_path: &Path, args: &ViewArgs) -> Result<()> {
+    let f = File::open(file_path)?;
+    let mut reader = BufReader::new(f);
+
+    view_reader_of_format(&mut reader, args)
 }
 
 fn output_file_separator() {
@@ -40,25 +69,23 @@ fn view_multiple_files(args: &ViewArgs) -> Result<()> {
         }
 
         println!("==> {} <==", file_path.display());
-        if let Err(e) = view_file_of_format(file_path, args) {
-            println!("view file error: {}", e);
+        if let Err(e) = view_single_file_by_path(file_path, args) {
+            eprintln!("view file error: {}", e);
         }
     }
 
     Ok(())
 }
 
-fn view_file_of_format(file_path: &Path, args: &ViewArgs) -> Result<()> {
+fn view_reader_of_format(reader: &mut impl BufRead, args: &ViewArgs) -> Result<()> {
     match args.format {
-        FileFormat::Text => view_text(file_path, args)?,
-        FileFormat::Hex => view_hex(file_path, args)?,
+        FileFormat::Text => view_reader_text(reader, args)?,
+        FileFormat::Hex => view_reader_hex(reader, args)?,
     }
     Ok(())
 }
 
-fn view_text(file_path: &Path, args: &ViewArgs) -> Result<()> {
-    let f = File::open(file_path)?;
-    let mut reader = BufReader::new(f);
+fn view_reader_text(reader: &mut impl BufRead, args: &ViewArgs) -> Result<()> {
     let mut buffer = String::new();
 
     while reader.read_line(&mut buffer)? > 0 {
@@ -69,12 +96,11 @@ fn view_text(file_path: &Path, args: &ViewArgs) -> Result<()> {
     Ok(())
 }
 
-fn view_hex(file_path: &Path, args: &ViewArgs) -> Result<()> {
-    let mut f = File::open(file_path)?;
+fn view_reader_hex(reader: &mut impl BufRead, args: &ViewArgs) -> Result<()> {
     let mut pos = 0;
     let mut buffer = vec![0; args.bytes_per_line];
 
-    while let Ok(_) = f.read_exact(&mut buffer) {
+    while let Ok(_) = reader.read_exact(&mut buffer) {
         print!("[0x{:08x}] ", pos);
         pos += args.bytes_per_line;
         for byte in &buffer {
