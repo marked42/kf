@@ -64,11 +64,14 @@ fn output_file_separator() {
 
 fn view_multiple_files(args: &ViewArgs) -> Result<()> {
     for (i, file_path) in args.file_paths.iter().enumerate() {
-        if i > 0 {
-            output_file_separator();
+        if !args.quite {
+            if i > 0 {
+                output_file_separator();
+            }
+
+            println!("==> {} <==", file_path.display());
         }
 
-        println!("==> {} <==", file_path.display());
         if let Err(e) = view_single_file_by_path(file_path, args) {
             eprintln!("view file error: {}", e);
         }
