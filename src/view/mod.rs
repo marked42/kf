@@ -5,12 +5,14 @@ use std::path::Path;
 mod args;
 mod error;
 mod format;
+mod range;
 
 pub use args::ViewArgs;
 pub use error::{Result, ViewError};
 pub use format::FileFormat;
 
 pub fn view_files(args: ViewArgs) -> Result<()> {
+    println!("{:?}", args);
     match args.file_paths.len() {
         0 => view_stdin(&args)?,
         1 => view_single_file(&args)?,
