@@ -1,10 +1,76 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use clap::builder::{TypedValueParser, ValueParserFactory};
+use clap::error::ErrorKind;
+
+use super::range::RangeSpec;
 
 #[derive(Debug, Parser)]
 pub struct ViewArgs {
-    // TODO: view from stdin when no file specified
-    #[arg(index = 1, help = "File to view in specified format")]
-    pub file_path: PathBuf,
+    #[arg(
+        index = 1,
+        help = "Files to view in specified format, standard input use when not files specified"
+    )]
+    pub file_paths: Vec<PathBuf>,
+
+    #[arg(
+        short,
+        long,
+        help = "Suppress printing of header when multiple files are provided"
+    )]
+    pub quite: bool,
+
+    #[arg(
+        short = 'n',
+        long,
+        help = "Lines to output. Use '-' for all lines, e.g., '1-5' or '10'",
+        default_value = "-",
+        // required to work with default_missing_value
+        num_args = 0..=1,
+        default_missing_value = "-",
+        value_parser = clap::value_parser!(RangeSpec))
+    ]
+    pub lines: RangeSpec,
+}
+
+#[derive(Clone)]
+pub struct RangeSpecValueParser;
+
+impl ValueParserFactory for RangeSpec {
+    type Parser = RangeSpecValueParser;
+
+    fn value_parser() -> Self::Parser {
+        RangeSpecValueParser
+    }
+}
+
+impl TypedValueParser for RangeSpecValueParser {
+    type Value = RangeSpec;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let value_str = value
+            .to_str()
+            .ok_or_else(|| clap::Error::new(ErrorKind::InvalidUtf8).with_cmd(cmd))?;
+
+        value_str.parse().map_err(|err_msg| {
+            let mut err = clap::Error::new(ErrorKind::InvalidValue).with_cmd(cmd);
+            if let Some(arg) = arg {
+                err.insert(
+                    clap::error::ContextKind::InvalidArg,
+                    clap::error::ContextValue::String(arg.to_string()),
+                );
+            }
+            err.insert(
+                clap::error::ContextKind::InvalidValue,
+                clap::error::ContextValue::String(format!("{}: {}", value_str, err_msg)),
+            );
+            err
+        })
+    }
 }
