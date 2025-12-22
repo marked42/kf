@@ -40,7 +40,7 @@ fn try_main() -> Result<()> {
 
     match cli.command {
         cli::Command::Grep(args) => grep::grep(args)?,
-        cli::Command::View(args) => view::view_file(args)?,
+        cli::Command::View(args) => view::view_files(args)?,
         cli::Command::Echo(args) => echo::echo(args)?,
         cli::Command::Hex(args) => hex::view_hex(args)?,
     }
